@@ -134,6 +134,7 @@ from cinder.volume.drivers.ibm.storwize_svc import storwize_svc_fc as \
     cinder_volume_drivers_ibm_storwize_svc_storwizesvcfc
 from cinder.volume.drivers.ibm.storwize_svc import storwize_svc_iscsi as \
     cinder_volume_drivers_ibm_storwize_svc_storwizesvciscsi
+from cinder.volume.drivers import infinidat as cinder_volume_drivers_infinidat
 from cinder.volume.drivers.infortrend.eonstor_ds_cli import common_cli as \
     cinder_volume_drivers_infortrend_eonstor_ds_cli_commoncli
 from cinder.volume.drivers.kaminario import kaminario_common as \
@@ -358,6 +359,7 @@ def list_opts():
                 [cinder_volume_api.volume_host_opt],
                 [cinder_volume_api.volume_same_az_opt],
                 [cinder_volume_api.az_cache_time_opt],
+                cinder_volume_drivers_infinidat.infinidat_opts,
                 cinder_volume_drivers_hpe_hpe3parcommon.hpe3par_opts,
                 cinder_volume_drivers_datera.d_opts,
                 cinder_volume_drivers_zadara.zadara_opts,
