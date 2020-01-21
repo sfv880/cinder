@@ -1,0 +1,4 @@
+---
+features:
+  - |
+    INFINIDAT InfiniBox volume driver: Added manage/unmanage support.

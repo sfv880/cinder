@@ -27,7 +27,6 @@ from cinder import version
 from cinder.volume import configuration
 from cinder.volume.drivers import infinidat
 
-
 TEST_WWN_1 = '00:11:22:33:44:55:66:77'
 TEST_WWN_2 = '11:11:22:33:44:55:66:77'
 
@@ -50,6 +49,7 @@ def skip_driver_setup(func):
     @functools.wraps(func)
     def f(*args, **kwargs):
         return func(*args, **kwargs)
+
     f.__skip_driver_setup = True
     return f
 
@@ -107,23 +107,33 @@ class InfiniboxDriverTestCaseBase(test.TestCase):
     def _infinibox_mock(self):
         result = mock.Mock()
         self._mock_volume = mock.Mock()
+        self._mock_volume.get_pool_name.return_value = (
+            self.configuration.infinidat_pool_name)
         self._mock_volume.get_size.return_value = 1 * units.Gi
         self._mock_volume.has_children.return_value = False
         self._mock_volume.get_logical_units.return_value = []
         self._mock_volume.create_snapshot.return_value = self._mock_volume
+        self._mock_volume.get_provisioning.return_value = 'THIN'
+        self._mock_volume.is_compression_enabled.return_value = False
+
         self._mock_host = mock.Mock()
         self._mock_host.get_luns.return_value = []
         self._mock_host.map_volume().get_lun.return_value = 1
+
         self._mock_pool = mock.Mock()
         self._mock_pool.get_free_physical_capacity.return_value = units.Gi
         self._mock_pool.get_physical_capacity.return_value = units.Gi
+        self._mock_pool.get_volumes.return_value = [self._mock_volume]
+
         self._mock_ns = mock.Mock()
         self._mock_ns.get_ips.return_value = [
             mock.Mock(ip_address=TEST_IP_ADDRESS, enabled=True)]
         self._mock_ns.get_properties.return_value = mock.Mock(
             iscsi_iqn=TEST_IQN, iscsi_tcp_port=TEST_ISCSI_TCP_PORT)
+
         self._mock_group = mock.Mock()
         self._mock_qos_policy = mock.Mock()
+
         result.volumes.safe_get.return_value = self._mock_volume
         result.volumes.create.return_value = self._mock_volume
         result.pools.safe_get.return_value = self._mock_pool
@@ -142,8 +152,10 @@ class InfiniboxDriverTestCaseBase(test.TestCase):
 
 
 class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
-    def _generate_mock_object_metadata(self, cinder_object):
+    @staticmethod
+    def _generate_mock_object_metadata(infinidat_object, cinder_object):
         return {"system": "openstack",
+                "backend_volume_name": infinidat_object.get_name(),
                 "openstack_version": version.version_info.release_string(),
                 "cinder_id": cinder_object.id,
                 "cinder_name": cinder_object.name,
@@ -151,9 +163,11 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
 
     def _validate_object_metadata(self, infinidat_object, cinder_object):
         infinidat_object.set_metadata_from_dict.assert_called_once_with(
-            self._generate_mock_object_metadata(cinder_object))
+            self._generate_mock_object_metadata(infinidat_object,
+                                                cinder_object))
 
-    def _generate_mock_host_metadata(self):
+    @staticmethod
+    def _generate_mock_host_metadata():
         return {"system": "openstack",
                 "openstack_version": version.version_info.release_string(),
                 "hostname": socket.gethostname(),
@@ -749,3 +763,227 @@ class InfiniboxDriverTestCaseQoS(InfiniboxDriverTestCaseBase):
         self.driver.create_volume(test_volume)
         self._system.qos_policies.create.assert_not_called()
         self._mock_qos_policy.assign_entity.assert_called()
+
+
+class InfiniboxDriverTestCaseManageApi(InfiniboxDriverTestCaseBase):
+    def setUp(self):
+        super(InfiniboxDriverTestCaseManageApi, self).setUp()
+
+    @staticmethod
+    def _generate_mock_object_metadata(cinder_object):
+        return {"system": "openstack",
+                "openstack_version": version.version_info.release_string(),
+                "cinder_id": cinder_object.id,
+                "cinder_name": cinder_object.name,
+                "host.created_by": infinidat._INFINIDAT_CINDER_IDENTIFIER}
+
+    @staticmethod
+    def _validate_object_metadata(infinidat_object, cinder_object):
+        infinidat_object.set_metadata_from_dict.assert_called()
+
+    def _generate_extra_info(self):
+        return dict(
+            pool_name=self._mock_volume.get_pool_name(),
+            type=self._mock_volume.get_type(),
+            qos_policy=self._mock_volume.get_qos_policy(),
+            metadata=str(self._mock_volume.get_all_metadata()),
+        )
+
+    @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
+    def test_manage_existing(self, *mocks):
+        self.driver.manage_existing(test_volume,
+                                    {'source-name': 'existing_volume'})
+
+    @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
+    def test_manage_existing_no_such_volume(self, *mocks):
+        self._system.volumes.safe_get.return_value = None
+        self.assertRaises(exception.InvalidVolume, self.driver.manage_existing,
+                          test_volume,
+                          {'source-name': 'existing_volume'})
+
+    @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
+    def test_manage_existing_wrong_pool(self, *mocks):
+        self._mock_volume.get_pool_name.return_value = 'blah'
+        self.assertRaises(exception.InvalidInput, self.driver.manage_existing,
+                          test_volume,
+                          {'source-name': 'existing_volume'})
+
+    @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
+    def test_manage_existing_validate_metadata(self, *mocks):
+        self.driver.manage_existing(test_volume,
+                                    {'source-name': 'existing_volume'})
+        self._validate_object_metadata(self._mock_volume, test_volume)
+
+    @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
+    def test_existing_get_size(self, *mocks):
+        size = self.driver.manage_existing_get_size(
+            test_volume, {'source-name': 'existing_volume'})
+        self.assertEqual(size, 1)
+
+    @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
+    def test_existing_get_size_round_up_correctly(self, *mocks):
+        self._mock_volume.get_size.return_value = 1.7 * units.Gi
+        size = self.driver.manage_existing_get_size(
+            test_volume, {'source-name': 'existing_volume'})
+        self.assertEqual(size, 2)
+
+    def _setup_get_manageable_volumes(self):
+        self._mock_volume.get_name.return_value = self.driver._make_ds_name(
+            test_volume, 'vol')
+        self._mock_volume.is_snapshot.return_value = False
+        self._mock_volume.get_type.return_value = 'MASTER'
+        self._mock_volume.get_qos_policy.return_value = None
+        self._mock_volume.get_all_metadata.return_value = None
+
+        self.expected_refs = [
+            dict(
+                cinder_id=None,
+                reference={'name': self._mock_volume.get_name()},
+                size=self._mock_volume.get_size() / units.Gi,
+                extra_info=self._generate_extra_info(),
+                safe_to_manage=True,
+                reason_not_safe='',
+            ),
+        ]
+
+    @staticmethod
+    def _setup_mock_pagination():
+        marker = mock.Mock()
+        limit = mock.Mock()
+        offset = mock.Mock()
+        sort_keys = mock.Mock()
+        sort_dirs = mock.Mock()
+        return [marker, limit, offset, sort_keys, sort_dirs]
+
+    def test_get_manageable_volumes(self, *mocks):
+        self._setup_get_manageable_volumes()
+        page_values = [None, 10, 0, [],
+                       []]  # marker, limit, offset, sort_keys, sort_dirs
+        sorted_entries = self.driver.get_manageable_volumes([], *page_values)
+        self.assertEqual(sorted_entries, self.expected_refs)
+
+    def test_get_manageable_volumes_no_volumes(self, *mocks):
+        self._mock_pool.get_volumes.return_value = []
+        sorted_entries = self.driver.get_manageable_volumes([], None, 10, 0,
+                                                            [], [])
+        self.assertEqual(sorted_entries, [])
+
+    def test_get_manageable_volumes_already_managed(self, *mocks):
+        page_values = [None, 10, 0, [],
+                       []]  # marker, limit, offset, sort_keys, sort_dirs
+        self._setup_get_manageable_volumes()
+        self._mock_volume.get_all_metadata.return_value = (
+            self._generate_mock_object_metadata(test_volume))
+        sorted_entries = self.driver.get_manageable_volumes([test_volume],
+                                                            *page_values)
+        self.expected_refs[0]['cinder_id'] = test_volume.id
+        self.expected_refs[0]['safe_to_manage'] = False
+        self.expected_refs[0]['reason_not_safe'] = 'Already managed by cinder'
+        self.expected_refs[0]['extra_info'] = self._generate_extra_info()
+        self.assertEqual(sorted_entries, self.expected_refs)
+
+    def test_get_manageable_volumes_no_metadata(self, *mocks):
+        page_values = [None, 10, 0, [],
+                       []]  # marker, limit, offset, sort_keys, sort_dirs
+        self._setup_get_manageable_volumes()
+        sorted_entries = self.driver.get_manageable_volumes([test_volume],
+                                                            *page_values)
+        self.expected_refs[0]['cinder_id'] = test_volume.id
+        self.expected_refs[0]['safe_to_manage'] = False
+        self.expected_refs[0]['reason_not_safe'] = (
+            'Already managed by cinder but has no backend metadata')
+        self.assertEqual(sorted_entries, self.expected_refs)
+
+    ###
+    # SNAPSHOT TESTS
+    ###
+    @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
+    def test_manage_existing_snapshot(self, *mocks):
+        self.driver.manage_existing_snapshot(
+            test_volume, {'source-name': 'existing_volume'})
+
+    @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
+    def test_manage_existing_snapshot_none(self, *mocks):
+        self._system.volumes.safe_get.return_value = None
+        self.assertRaises(exception.InvalidSnapshot,
+                          self.driver.manage_existing_snapshot, test_volume,
+                          {'source-name': 'existing_volume'})
+
+    @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
+    def test_manage_existing_snapshot_validate_metadata(self, *mocks):
+        self.driver.manage_existing_snapshot(
+            test_volume, {'source-name': 'existing_volume'})
+        self._validate_object_metadata(self._mock_volume, test_volume)
+
+    @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
+    def test_existing_snapshot_get_size(self, *mocks):
+        size = self.driver.manage_existing_snapshot_get_size(
+            test_volume, {'source-name': 'existing_volume'})
+        self.assertEqual(size, 1)
+
+    @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
+    def test_existing_snapshot_get_size_round_up_correctly(self, *mocks):
+        self._mock_volume.get_size.return_value = 1.5 * units.Gi
+        size = self.driver.manage_existing_snapshot_get_size(
+            test_volume, {'source-name': 'existing_volume'})
+        self.assertEqual(size, 2)
+
+    def _setup_get_manageable_snapshots(self):
+        self._mock_volume.get_name.return_value = self.driver._make_ds_name(
+            test_snapshot, 'snap')
+        self._mock_volume.is_snapshot.return_value = True
+        self._mock_volume.get_type.return_value = 'SNAPSHOT'
+        self._mock_volume.get_qos_policy.return_value = None
+        self._mock_volume.get_all_metadata.return_value = None
+        self._mock_volume.get_parent.return_value = self._mock_volume
+
+        self.expected_refs = [
+            dict(
+                cinder_id=None,
+                reference={'name': self._mock_volume.get_name()},
+                size=self._mock_volume.get_size() / units.Gi,
+                extra_info=self._generate_extra_info(),
+                safe_to_manage=True,
+                reason_not_safe='',
+                source_reference={'name': self._mock_volume.get_name()}
+            ),
+        ]
+
+    def test_get_manageable_snapshots(self, *mocks):
+        self._setup_get_manageable_snapshots()
+        page_values = [None, 10, 0, [],
+                       []]  # marker, limit, offset, sort_keys, sort_dirs
+        sorted_entries = self.driver.get_manageable_snapshots([], *page_values)
+        self.assertEqual(sorted_entries, self.expected_refs)
+
+    def test_get_manageable_snapshots_none(self, *mocks):
+        self._mock_pool.get_volumes.return_value = []
+        sorted_entries = self.driver.get_manageable_snapshots([], None, 10, 0,
+                                                              [], [])
+        self.assertEqual(sorted_entries, [])
+
+    def test_get_manageable_snapshots_already_managed(self, *mocks):
+        page_values = [None, 10, 0, [],
+                       []]  # marker, limit, offset, sort_keys, sort_dirs
+        self._setup_get_manageable_snapshots()
+        self._mock_volume.get_all_metadata.return_value = (
+            self._generate_mock_object_metadata(test_snapshot))
+        sorted_entries = self.driver.get_manageable_snapshots([test_snapshot],
+                                                              *page_values)
+        self.expected_refs[0]['cinder_id'] = test_snapshot.id
+        self.expected_refs[0]['safe_to_manage'] = False
+        self.expected_refs[0]['reason_not_safe'] = 'Already managed by cinder'
+        self.expected_refs[0]['extra_info'] = self._generate_extra_info()
+        self.assertEqual(sorted_entries, self.expected_refs)
+
+    def test_get_manageable_snapshots_managed_no_metadata(self, *mocks):
+        page_values = [None, 10, 0, [],
+                       []]  # marker, limit, offset, sort_keys, sort_dirs
+        self._setup_get_manageable_snapshots()
+        sorted_entries = self.driver.get_manageable_snapshots([test_snapshot],
+                                                              *page_values)
+        self.expected_refs[0]['cinder_id'] = test_snapshot.id
+        self.expected_refs[0]['safe_to_manage'] = False
+        self.expected_refs[0]['reason_not_safe'] = (
+            'Already managed by cinder but has no backend metadata')
+        self.assertEqual(sorted_entries, self.expected_refs)
