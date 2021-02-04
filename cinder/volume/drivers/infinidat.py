@@ -83,6 +83,9 @@ infinidat_opts = [
                 default=False,
                 help='Specifies whether to turn on compression for newly '
                      'created volumes.'),
+    cfg.BoolOpt('infinidat_use_ssl',
+                default=True,
+                help='Specifies whether to use SSL for network communication.'),
 ]
 
 CONF = cfg.CONF
@@ -117,10 +120,11 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         1.4 - added support for QoS
         1.5 - added support for volume compression
         1.6 - added support for volume multi-attach
+        1.7 - add configurable infinidat_use_ssl back-end parameter
 
     """
 
-    VERSION = '1.6'
+    VERSION = '1.7'
 
     # ThirdPartySystems wiki page
     CI_WIKI_NAME = "INFINIDAT_CI"
@@ -140,8 +144,9 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             'max_over_subscription_ratio')
         return infinidat_opts + additional_opts
 
-    def _setup_and_get_system_object(self, management_address, auth):
-        system = infinisdk.InfiniBox(management_address, auth=auth)
+    def _setup_and_get_system_object(self, management_address, auth, use_ssl):
+        system = infinisdk.InfiniBox(
+            management_address, auth=auth, use_ssl=use_ssl)
         system.api.add_auto_retry(
             lambda e: isinstance(
                 e, infinisdk.core.exceptions.APITransportFailure) and
@@ -159,8 +164,9 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         auth = (self.configuration.san_login,
                 self.configuration.san_password)
         self.management_address = self.configuration.san_ip
-        self._system = (
-            self._setup_and_get_system_object(self.management_address, auth))
+        use_ssl = self.configuration.safe_get('infinidat_use_ssl')
+        self._system = (self._setup_and_get_system_object(
+                        self.management_address, auth, use_ssl))
         backend_name = self.configuration.safe_get('volume_backend_name')
         self._backend_name = backend_name or self.__class__.__name__
         self._volume_stats = None
