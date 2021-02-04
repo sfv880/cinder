@@ -80,6 +80,9 @@ infinidat_opts = [
                 default=False,
                 help='Specifies whether to turn on compression for newly '
                      'created volumes.'),
+    cfg.BoolOpt('infinidat_use_ssl',
+                 default=True,
+                 help='Specifies whether to use SSL for network communication.'),
 ]
 
 CONF = cfg.CONF
@@ -113,6 +116,7 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         1.3 - added generic volume groups support
         1.4 - added support for QoS
         1.5 - added support for volume compression
+              backported SSL fix from 1.7
 
     """
 
@@ -135,7 +139,9 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         auth = (self.configuration.san_login,
                 self.configuration.san_password)
         self.management_address = self.configuration.san_ip
-        self._system = infinisdk.InfiniBox(self.management_address, auth=auth)
+        use_ssl = self.configuration.safe_get('infinidat_use_ssl')
+        self._system = infinisdk.InfiniBox(
+            self.management_address, auth=auth, use_ssl=use_ssl)
         self._system.login()
         backend_name = self.configuration.safe_get('volume_backend_name')
         self._backend_name = backend_name or self.__class__.__name__
