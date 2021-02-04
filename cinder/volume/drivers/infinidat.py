@@ -121,6 +121,7 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         1.5 - added support for volume compression
         1.6 - added support for volume multi-attach
         1.7 - add configurable infinidat_use_ssl back-end parameter
+              fixed ISCSI to return all portals
 
     """
 
@@ -371,11 +372,12 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             raise exception.VolumeDriverException(message=msg)
         return netspace
 
-    def _get_iscsi_portal(self, netspace):
-        for netpsace_interface in netspace.get_ips():
-            if netpsace_interface.enabled:
-                port = netspace.get_properties().iscsi_tcp_port
-                return "%s:%s" % (netpsace_interface.ip_address, port)
+    def _get_iscsi_portals(self, netspace):
+        port = netspace.get_properties().iscsi_tcp_port
+        portals = ["%s:%s" % (interface.ip_address, port) for interface
+                   in netspace.get_ips() if interface.enabled]
+        if portals:
+            return portals
         # if we get here it means there are no enabled ports
         msg = (_('No available interfaces in iSCSI network space %s') %
                netspace.get_name())
@@ -404,9 +406,11 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         target_luns = []
         for netspace_name in netspace_names:
             netspace = self._get_iscsi_network_space(netspace_name)
-            target_portals.append(self._get_iscsi_portal(netspace))
-            target_iqns.append(netspace.get_properties().iscsi_iqn)
-            target_luns.append(lun)
+            netspace_portals = self._get_iscsi_portals(netspace)
+            target_portals.extend(netspace_portals)
+            target_iqns.extend([netspace.get_properties().iscsi_iqn] *
+                               len(netspace_portals))
+            target_luns.extend([lun] * len(netspace_portals))
 
         result_data = dict(target_discovered=True,
                            target_portal=target_portals[0],
