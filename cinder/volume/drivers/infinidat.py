@@ -118,10 +118,11 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         1.5 - added support for volume compression
         1.6 - added support for volume multi-attach
         1.7 - fixed ISCSI to return all portals
+        1.8 - added update migrated volume
 
     """
 
-    VERSION = '1.7'
+    VERSION = '1.8'
 
     # ThirdPartySystems wiki page
     CI_WIKI_NAME = "INFINIDAT_CI"
@@ -837,3 +838,43 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         for snapshot in snapshots:
             self.delete_snapshot(snapshot)
         return None, None
+
+    @infinisdk_to_cinder_exceptions
+    def update_migrated_volume(self, ctxt, volume, new_volume,
+                               original_volume_status):
+        model_update = {'_name_id': new_volume._name_id or new_volume.id}
+        new_volume_name = self._make_volume_name(new_volume)
+        volume_name = self._make_volume_name(volume)
+        backup_name = f'{volume_name}-backup'
+        try:
+            new_infinidat_volume = self._get_infinidat_volume(new_volume)
+        except exception.InvalidVolume:
+            LOG.debug('Destination volume %s not found', new_volume_name)
+            return model_update
+        try:
+            infinidat_volume = self._get_infinidat_volume(volume)
+        except exception.InvalidVolume:
+            LOG.debug('Source volume %s not found', volume_name)
+            volume_found = False
+        else:
+            volume_found = True
+        if volume_found:
+            try:
+                infinidat_volume.update_name(backup_name)
+            except infinisdk.core.exceptions.InfiniSDKException as error:
+                LOG.debug('Failed to rename source volume %s -> %s: %s',
+                          volume_name, backup_name, error)
+                return model_update
+        try:
+            new_infinidat_volume.update_name(volume_name)
+        except infinisdk.core.exceptions.InfiniSDKException as error:
+            LOG.debug('Failed to rename destination volume %s -> %s: %s',
+                      new_volume_name, volume_name, error)
+            return model_update
+        if volume_found:
+            try:
+                infinidat_volume.update_name(new_volume_name)
+            except infinisdk.core.exceptions.InfiniSDKException as error:
+                LOG.debug('Failed to rename backup volume %s -> %s: %s',
+                          backup_name, new_volume_name, error)
+        return {'_name_id': None}
