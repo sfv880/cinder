@@ -144,8 +144,10 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             'max_over_subscription_ratio')
         return infinidat_opts + additional_opts
 
-    def _setup_and_get_system_object(self, management_address, auth):
-        system = infinisdk.InfiniBox(management_address, auth=auth)
+    def _setup_and_get_system_object(self, management_address, auth,
+                                     use_ssl=False, ssl_cert=None):
+        system = infinisdk.InfiniBox(management_address, auth=auth,
+                                     use_ssl=use_ssl, ssl_cert=ssl_cert)
         system.api.add_auto_retry(
             lambda e: isinstance(
                 e, infinisdk.core.exceptions.APITransportFailure) and
@@ -160,11 +162,12 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             msg = _("Missing 'infinisdk' python module, ensure the library"
                     " is installed and available.")
             raise exception.VolumeDriverException(message=msg)
-        auth = (self.configuration.san_login,
-                self.configuration.san_password)
+        auth = (self.configuration.san_login, self.configuration.san_password)
+        use_ssl = self.configuration.driver_use_ssl
+        ssl_cert = self.configuration.driver_ssl_cert_path
         self.management_address = self.configuration.san_ip
-        self._system = (
-            self._setup_and_get_system_object(self.management_address, auth))
+        self._system = self._setup_and_get_system_object(
+            self.management_address, auth, use_ssl=use_ssl, ssl_cert=ssl_cert)
         backend_name = self.configuration.safe_get('volume_backend_name')
         self._backend_name = backend_name or self.__class__.__name__
         self._volume_stats = None

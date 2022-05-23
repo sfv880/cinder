@@ -86,6 +86,8 @@ class InfiniboxDriverTestCaseBase(test.TestCase):
         self.configuration.san_thin_provision = True
         self.configuration.san_login = 'user'
         self.configuration.san_password = 'pass'
+        self.configuration.driver_use_ssl = True
+        self.configuration.driver_ssl_cert_path = '/path/to/CA/bundle'
         self.configuration.volume_backend_name = 'mock'
         self.configuration.volume_dd_blocksize = '1M'
         self.configuration.use_multipath_for_image_xfer = False
