@@ -120,6 +120,7 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         1.7 - fixed ISCSI to return all portals
         1.8 - added update migrated volume
             - added revert to snapshot
+            - fixed volume multi-attach
 
     """
 
@@ -443,6 +444,37 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             ports = [iqn.IQN(connector['initiator'])]
         return ports
 
+    def _is_volume_multiattached(self, volume, connector):
+        """Returns whether the volume is multiattached.
+
+        Check if there are multiple attachments to the volume
+        from the same Nove host. Terminate connection only for
+        the last attachment from the corresponding host.
+        """
+        if not (connector and volume.multiattach and
+                volume.volume_attachment):
+            return False
+        attributes = ['system uuid']
+        if self._protocol == 'FC':
+            attributes.append('wwpns')
+        else:
+            attributes.append('initiator')
+        found = dict.fromkeys(attributes, [])
+        for attachment in volume.volume_attachment:
+            if not attachment.connector:
+                continue
+            for attribute in attributes:
+                value = attachment.connector.get(attribute)
+                if not value:
+                    continue
+                values = found[attribute]
+                if value in values and connector.get(attribute) == value:
+                    LOG.debug('volume %s is multiattached to %s %s',
+                              volume.id, attribute, value)
+                    return True
+                values.append(value)
+        return False
+
     @infinisdk_to_cinder_exceptions
     @coordination.synchronized('infinidat-{self.management_address}-lock')
     def initialize_connection(self, volume, connector):
@@ -456,6 +488,8 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
     @coordination.synchronized('infinidat-{self.management_address}-lock')
     def terminate_connection(self, volume, connector, **kwargs):
         """Unmap an InfiniBox volume from the host"""
+        if self._is_volume_multiattached(volume, connector):
+            return True
         infinidat_volume = self._get_infinidat_volume(volume)
         if self._protocol == constants.FC:
             volume_type = 'fibre_channel'
