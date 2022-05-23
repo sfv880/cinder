@@ -14,11 +14,12 @@
 #    under the License.
 """INFINIDAT InfiniBox Volume Driver."""
 
+import collections
 from contextlib import contextmanager
 import functools
 import platform
 import socket
-from unittest import mock
+import uuid
 
 from oslo_config import cfg
 from oslo_log import log as logging
@@ -119,6 +120,7 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         1.6 - added support for volume multi-attach
         1.7 - fixed ISCSI to return all portals
         1.8 - added update migrated volume
+            - added backup for attached volume
             - added revert to snapshot
             - fixed volume multi-attach
 
@@ -663,12 +665,13 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         - unmap volume and clone and delete the clone
         """
         infinidat_snapshot = self._get_infinidat_snapshot(snapshot)
-        clone_name = self._make_volume_name(volume) + '-internal'
-        infinidat_clone = infinidat_snapshot.create_snapshot(name=clone_name)
-        # we need a cinder-volume-like object to map the clone by name
-        # (which is derived from the cinder id) but the clone is internal
-        # so there is no such object. mock one
-        clone = mock.Mock(id=str(volume.id) + '-internal')
+        clone_id = str(uuid.uuid4())
+        attributes = ['id', 'multiattach', 'volume_attachment']
+        instance = collections.namedtuple('Volume', attributes)
+        clone = instance(id=clone_id, multiattach=False,
+                         volume_attachment=None)
+        name = self._make_volume_name(clone)
+        infinidat_clone = infinidat_snapshot.create_snapshot(name=name)
         try:
             infinidat_volume = self._create_volume(volume)
             try:
@@ -696,20 +699,6 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
             return      # snapshot not found
         snapshot.safe_delete()
 
-    def _asssert_volume_not_mapped(self, volume):
-        # copy is not atomic so we can't clone while the volume is mapped
-        infinidat_volume = self._get_infinidat_volume(volume)
-        if len(infinidat_volume.get_logical_units()) == 0:
-            return
-
-        # volume has mappings
-        msg = _("INFINIDAT Cinder driver does not support clone of an "
-                "attached volume. "
-                "To get this done, create a snapshot from the attached "
-                "volume and then create a volume from the snapshot.")
-        LOG.error(msg)
-        raise exception.VolumeBackendAPIException(data=msg)
-
     @infinisdk_to_cinder_exceptions
     def create_cloned_volume(self, volume, src_vref):
         """Create a clone from source volume.
@@ -717,26 +706,22 @@ class InfiniboxVolumeDriver(san.SanISCSIDriver):
         InfiniBox does not yet support detached clone so use dd to copy data.
         This could be a lengthy operation.
 
+        * create a snapshot
+        * create a source volume from snapshot
         * map source volume
         * create and map new volume
-        * copy data from source to new volume
+        * copy data from clone to new volume
         * unmap both volumes
         """
-        self._asssert_volume_not_mapped(src_vref)
-        infinidat_volume = self._create_volume(volume)
-        try:
-            src_ctx = self._device_connect_context(src_vref)
-            dst_ctx = self._device_connect_context(volume)
-            with src_ctx as src_dev, dst_ctx as dst_dev:
-                dd_block_size = self.configuration.volume_dd_blocksize
-                volume_utils.copy_volume(src_dev['device']['path'],
-                                         dst_dev['device']['path'],
-                                         src_vref.size * units.Ki,
-                                         dd_block_size,
-                                         sparse=True)
-        except Exception:
-            infinidat_volume.delete()
-            raise
+        snapshot_id = str(uuid.uuid4())
+        snapshot_name = CONF.snapshot_name_template % snapshot_id
+        attributes = ['id', 'name', 'volume']
+        Snapshot = collections.namedtuple('Snapshot', attributes)
+        snapshot = Snapshot(id=snapshot_id, name=snapshot_name,
+                            volume=src_vref)
+        self.create_snapshot(snapshot)
+        self.create_volume_from_snapshot(volume, snapshot)
+        self.delete_snapshot(snapshot)
 
     def _build_initiator_target_map(self, connector, all_target_wwns):
         """Build the target_wwns and the initiator target map."""
