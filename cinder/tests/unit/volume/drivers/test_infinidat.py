@@ -21,6 +21,7 @@ from unittest import mock
 
 from oslo_utils import units
 
+from cinder import context
 from cinder import exception
 from cinder.tests.unit import test
 from cinder import version
@@ -48,7 +49,8 @@ TEST_TARGET_PORTAL4 = '{}:{}'.format(TEST_IP_ADDRESS4, TEST_ISCSI_TCP_PORT2)
 TEST_FC_PROTOCOL = 'fc'
 TEST_ISCSI_PROTOCOL = 'iscsi'
 
-test_volume = mock.Mock(id=1, size=1, volume_type_id=1)
+test_volume = mock.Mock(id=1, _name_id=None, size=1, volume_type_id=1)
+test_volume2 = mock.Mock(id=2, _name_id=None, size=1, volume_type_id=1)
 test_snapshot = mock.Mock(id=2, volume=test_volume, volume_id='1')
 test_clone = mock.Mock(id=3, size=1)
 test_group = mock.Mock(id=4)
@@ -77,7 +79,7 @@ class InfiniboxDriverTestCaseBase(test.TestCase):
 
     def setUp(self):
         super(InfiniboxDriverTestCaseBase, self).setUp()
-
+        self.ctxt = context.get_admin_context()
         # create mock configuration
         self.configuration = mock.Mock(spec=configuration.Configuration)
         self.configuration.infinidat_storage_protocol = TEST_FC_PROTOCOL
@@ -103,6 +105,7 @@ class InfiniboxDriverTestCaseBase(test.TestCase):
         # mock external library dependencies
         infinisdk = self.patch("cinder.volume.drivers.infinidat.infinisdk")
         capacity = self.patch("cinder.volume.drivers.infinidat.capacity")
+        self._log = self.patch("cinder.volume.drivers.infinidat.LOG")
         self._iqn = self.patch("cinder.volume.drivers.infinidat.iqn")
         self._wwn = self.patch("cinder.volume.drivers.infinidat.wwn")
         self._wwn.WWN = mock.Mock
@@ -118,6 +121,7 @@ class InfiniboxDriverTestCaseBase(test.TestCase):
     def _infinibox_mock(self):
         result = mock.Mock()
         self._mock_volume = mock.Mock()
+        self._mock_new_volume = mock.Mock()
         self._mock_volume.get_size.return_value = 1 * units.Gi
         self._mock_volume.has_children.return_value = False
         self._mock_volume.get_logical_units.return_value = []
@@ -596,6 +600,80 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
         # make sure we actually detached the host mapping
         self._mock_host.unmap_volume.assert_called_once()
         self._mock_host.safe_delete.assert_called_once()
+
+    def test_update_migrated_volume_new_volume_not_found(self):
+        self._system.volumes.safe_get.side_effect = [
+            None, self._mock_volume]
+        update = self.driver.update_migrated_volume(self.ctxt,
+                                                    test_volume,
+                                                    test_volume2,
+                                                    'available')
+        self.assertEqual(2, self._log.error.call_count)
+        self.assertEqual({'_name_id': test_volume2.id}, update)
+
+    def test_update_migrated_volume_volume_not_found(self):
+        self._system.volumes.safe_get.side_effect = [
+            self._mock_new_volume, None]
+        update = self.driver.update_migrated_volume(self.ctxt,
+                                                    test_volume,
+                                                    test_volume2,
+                                                    'available')
+        self.assertEqual(1, self._log.error.call_count)
+        self.assertEqual({'_name_id': None}, update)
+
+    def test_update_migrated_volume_rename_error(self):
+        self._system.volumes.safe_get.side_effect = [
+            self._mock_new_volume, self._mock_volume]
+        self._mock_volume.update_name.side_effect = [
+            FakeInfinisdkException]
+        update = self.driver.update_migrated_volume(self.ctxt,
+                                                    test_volume,
+                                                    test_volume2,
+                                                    'available')
+        self.assertEqual(1, self._log.error.call_count)
+        self.assertEqual({'_name_id': test_volume2.id}, update)
+
+    def test_update_migrated_new_volume_rename_error(self):
+        self._system.volumes.safe_get.side_effect = [
+            self._mock_new_volume, self._mock_volume]
+        self._mock_volume.update_name.side_effect = [
+            None]
+        self._mock_new_volume.update_name.side_effect = [
+            FakeInfinisdkException]
+        update = self.driver.update_migrated_volume(self.ctxt,
+                                                    test_volume,
+                                                    test_volume2,
+                                                    'available')
+        self.assertEqual(1, self._log.error.call_count)
+        self.assertEqual({'_name_id': test_volume2.id}, update)
+
+    def test_update_migrated_volume_restore_error(self):
+        self._system.volumes.safe_get.side_effect = [
+            self._mock_new_volume, self._mock_volume]
+        self._mock_volume.update_name.side_effect = [
+            None, FakeInfinisdkException]
+        self._mock_new_volume.update_name.side_effect = [
+            None]
+        update = self.driver.update_migrated_volume(self.ctxt,
+                                                    test_volume,
+                                                    test_volume2,
+                                                    'available')
+        self.assertEqual(1, self._log.error.call_count)
+        self.assertEqual({'_name_id': None}, update)
+
+    def test_update_migrated(self):
+        self._system.volumes.safe_get.side_effect = [
+            self._mock_new_volume, self._mock_volume]
+        self._mock_volume.update_name.side_effect = [
+            None, None]
+        self._mock_new_volume.update_name.side_effect = [
+            None]
+        update = self.driver.update_migrated_volume(self.ctxt,
+                                                    test_volume,
+                                                    test_volume2,
+                                                    'available')
+        self.assertEqual(0, self._log.error.call_count)
+        self.assertEqual({'_name_id': None}, update)
 
 
 class InfiniboxDriverTestCaseFC(InfiniboxDriverTestCaseBase):
