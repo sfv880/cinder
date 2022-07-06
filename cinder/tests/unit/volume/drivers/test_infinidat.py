@@ -675,6 +675,19 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
         self.assertEqual(0, self._log.error.call_count)
         self.assertEqual({'_name_id': None}, update)
 
+    def test_snapshot_revert_use_temp_snapshot(self):
+        result = self.driver.snapshot_revert_use_temp_snapshot()
+        self.assertFalse(result)
+
+    def test_revert_to_snapshot(self):
+        self._mock_volume.restore.side_effect = None
+        self.driver.revert_to_snapshot(self.ctxt, test_volume, test_snapshot)
+
+    def test_revert_to_snapshot_resize(self):
+        test_snapshot.volume.size = 2
+        self.driver.revert_to_snapshot(self.ctxt, test_volume, test_snapshot)
+        self._mock_volume.resize.assert_called_with(units.Gi)
+
 
 class InfiniboxDriverTestCaseFC(InfiniboxDriverTestCaseBase):
     def test_initialize_connection_multiple_wwpns(self):
