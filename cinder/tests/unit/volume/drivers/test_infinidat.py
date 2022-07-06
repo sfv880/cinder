@@ -36,7 +36,8 @@ TEST_IP_ADDRESS1 = '1.1.1.1'
 TEST_IP_ADDRESS2 = '2.2.2.2'
 TEST_IP_ADDRESS3 = '3.3.3.3'
 TEST_IP_ADDRESS4 = '4.4.4.4'
-TEST_INITIATOR_IQN = 'iqn.2012-07.org.initiator:01'
+TEST_INITIATOR_IQN1 = 'iqn.2012-07.org.initiator:01'
+TEST_INITIATOR_IQN2 = 'iqn.2012-07.org.initiator:02'
 TEST_TARGET_IQN = 'iqn.2012-07.org.target:01'
 TEST_ISCSI_TCP_PORT1 = 3261
 TEST_ISCSI_TCP_PORT2 = 3262
@@ -49,14 +50,22 @@ TEST_TARGET_PORTAL4 = '{}:{}'.format(TEST_IP_ADDRESS4, TEST_ISCSI_TCP_PORT2)
 TEST_FC_PROTOCOL = 'fc'
 TEST_ISCSI_PROTOCOL = 'iscsi'
 
-test_volume = mock.Mock(id=1, _name_id=None, size=1, volume_type_id=1)
-test_volume2 = mock.Mock(id=2, _name_id=None, size=1, volume_type_id=1)
+test_volume = mock.Mock(id=1, _name_id=None, size=1, volume_type_id=1,
+                        multiattach=False, volume_attachment=None)
+test_volume2 = mock.Mock(id=2, _name_id=None, size=1, volume_type_id=1,
+                         multiattach=False, volume_attachment=None)
 test_snapshot = mock.Mock(id=2, volume=test_volume, volume_id='1')
-test_clone = mock.Mock(id=3, size=1)
+test_clone = mock.Mock(id=3, size=1, multiattach=False,
+                       volume_attachment=None)
 test_group = mock.Mock(id=4)
 test_snapgroup = mock.Mock(id=5, group=test_group)
-test_connector = dict(wwpns=[TEST_WWN_1],
-                      initiator=TEST_INITIATOR_IQN)
+test_connector1 = dict(wwpns=[TEST_WWN_1],
+                       initiator=TEST_INITIATOR_IQN1)
+test_connector2 = dict(wwpns=[TEST_WWN_2],
+                       initiator=TEST_INITIATOR_IQN2)
+test_attachment1 = mock.Mock(connector=test_connector1)
+test_attachment2 = mock.Mock(connector=test_connector2)
+test_attachment3 = mock.Mock(connector=None)
 
 
 def skip_driver_setup(func):
@@ -201,11 +210,13 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
 
     def test_initialize_connection(self):
         self._system.hosts.safe_get.return_value = None
-        result = self.driver.initialize_connection(test_volume, test_connector)
+        result = self.driver.initialize_connection(test_volume,
+                                                   test_connector1)
         self.assertEqual(1, result["data"]["target_lun"])
 
     def test_initialize_connection_host_exists(self):
-        result = self.driver.initialize_connection(test_volume, test_connector)
+        result = self.driver.initialize_connection(test_volume,
+                                                   test_connector1)
         self.assertEqual(1, result["data"]["target_lun"])
 
     def test_initialize_connection_mapping_exists(self):
@@ -213,55 +224,56 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
         mock_mapping.get_volume.return_value = self._mock_volume
         mock_mapping.get_lun.return_value = 888
         self._mock_host.get_luns.return_value = [mock_mapping]
-        result = self.driver.initialize_connection(test_volume, test_connector)
+        result = self.driver.initialize_connection(test_volume,
+                                                   test_connector1)
         self.assertEqual(888, result["data"]["target_lun"])
 
     def test_initialize_connection_volume_doesnt_exist(self):
         self._system.volumes.safe_get.return_value = None
         self.assertRaises(exception.InvalidVolume,
                           self.driver.initialize_connection,
-                          test_volume, test_connector)
+                          test_volume, test_connector1)
 
     def test_initialize_connection_create_fails(self):
         self._system.hosts.safe_get.return_value = None
         self._system.hosts.create.side_effect = self._raise_infinisdk
         self.assertRaises(exception.VolumeBackendAPIException,
                           self.driver.initialize_connection,
-                          test_volume, test_connector)
+                          test_volume, test_connector1)
 
     def test_initialize_connection_map_fails(self):
         self._mock_host.map_volume.side_effect = self._raise_infinisdk
         self.assertRaises(exception.VolumeBackendAPIException,
                           self.driver.initialize_connection,
-                          test_volume, test_connector)
+                          test_volume, test_connector1)
 
     def test_initialize_connection_metadata(self):
         self._system.hosts.safe_get.return_value = None
-        self.driver.initialize_connection(test_volume, test_connector)
+        self.driver.initialize_connection(test_volume, test_connector1)
         self._validate_host_metadata()
 
     def test_terminate_connection(self):
-        self.driver.terminate_connection(test_volume, test_connector)
+        self.driver.terminate_connection(test_volume, test_connector1)
 
     def test_terminate_connection_delete_host(self):
         self._mock_host.get_luns.return_value = [object()]
-        self.driver.terminate_connection(test_volume, test_connector)
+        self.driver.terminate_connection(test_volume, test_connector1)
         self.assertEqual(0, self._mock_host.safe_delete.call_count)
         self._mock_host.get_luns.return_value = []
-        self.driver.terminate_connection(test_volume, test_connector)
+        self.driver.terminate_connection(test_volume, test_connector1)
         self.assertEqual(1, self._mock_host.safe_delete.call_count)
 
     def test_terminate_connection_volume_doesnt_exist(self):
         self._system.volumes.safe_get.return_value = None
         self.assertRaises(exception.InvalidVolume,
                           self.driver.terminate_connection,
-                          test_volume, test_connector)
+                          test_volume, test_connector1)
 
     def test_terminate_connection_api_fail(self):
         self._mock_host.unmap_volume.side_effect = self._raise_infinisdk
         self.assertRaises(exception.VolumeBackendAPIException,
                           self.driver.terminate_connection,
-                          test_volume, test_connector)
+                          test_volume, test_connector1)
 
     def test_get_volume_stats_refreshes(self):
         result = self.driver.get_volume_stats()
@@ -374,7 +386,7 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
     @mock.patch("cinder.volume.volume_utils.copy_volume")
     @mock.patch("cinder.volume.volume_utils.brick_get_connector")
     @mock.patch("cinder.volume.volume_utils.brick_get_connector_properties",
-                return_value=test_connector)
+                return_value=test_connector1)
     @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
     def test_create_volume_from_snapshot(self, *mocks):
         self.driver.create_volume_from_snapshot(test_clone, test_snapshot)
@@ -392,7 +404,7 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
                           test_clone, test_snapshot)
 
     @mock.patch("cinder.volume.volume_utils.brick_get_connector_properties",
-                return_value=test_connector)
+                return_value=test_connector1)
     @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
     def test_create_volume_from_snapshot_map_fails(self, *mocks):
         self._mock_host.map_volume.side_effect = self._raise_infinisdk
@@ -403,7 +415,7 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
     @mock.patch("cinder.volume.volume_utils.copy_volume")
     @mock.patch("cinder.volume.volume_utils.brick_get_connector")
     @mock.patch("cinder.volume.volume_utils.brick_get_connector_properties",
-                return_value=test_connector)
+                return_value=test_connector1)
     def test_create_volume_from_snapshot_delete_clone_fails(self, *mocks):
         self._mock_volume.delete.side_effect = self._raise_infinisdk
         self.assertRaises(exception.VolumeBackendAPIException,
@@ -426,7 +438,7 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
     @mock.patch("cinder.volume.volume_utils.copy_volume")
     @mock.patch("cinder.volume.volume_utils.brick_get_connector")
     @mock.patch("cinder.volume.volume_utils.brick_get_connector_properties",
-                return_value=test_connector)
+                return_value=test_connector1)
     @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
     def test_create_cloned_volume(self, *mocks):
         self.driver.create_cloned_volume(test_clone, test_volume)
@@ -446,7 +458,7 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
                           test_clone, test_volume)
 
     @mock.patch("cinder.volume.volume_utils.brick_get_connector_properties",
-                return_value=test_connector)
+                return_value=test_connector1)
     @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
     def test_create_cloned_volume_map_fails(self, *mocks):
         self._mock_host.map_volume.side_effect = self._raise_infinisdk
@@ -516,7 +528,7 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
     @mock.patch("cinder.volume.volume_utils.copy_volume")
     @mock.patch("cinder.volume.volume_utils.brick_get_connector")
     @mock.patch("cinder.volume.volume_utils.brick_get_connector_properties",
-                return_value=test_connector)
+                return_value=test_connector1)
     @mock.patch('cinder.volume.volume_utils.is_group_a_cg_snapshot_type',
                 return_value=True)
     @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
@@ -528,7 +540,7 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
     @mock.patch("cinder.volume.volume_utils.copy_volume")
     @mock.patch("cinder.volume.volume_utils.brick_get_connector")
     @mock.patch("cinder.volume.volume_utils.brick_get_connector_properties",
-                return_value=test_connector)
+                return_value=test_connector1)
     @mock.patch('cinder.volume.volume_utils.is_group_a_cg_snapshot_type',
                 return_value=True)
     @mock.patch("cinder.volume.volume_types.get_volume_type_qos_specs")
@@ -600,6 +612,19 @@ class InfiniboxDriverTestCase(InfiniboxDriverTestCaseBase):
         # make sure we actually detached the host mapping
         self._mock_host.unmap_volume.assert_called_once()
         self._mock_host.safe_delete.assert_called_once()
+
+    def test_terminate_connection_no_attachment_connector(self):
+        test_volume.multiattach = True
+        test_volume.volume_attachment = [test_attachment3]
+        self.driver.terminate_connection(test_volume, test_connector1)
+
+    def test_terminate_connection_no_host(self):
+        self._system.hosts.safe_get.return_value = None
+        self.driver.terminate_connection(test_volume, test_connector1)
+
+    def test_terminate_connection_no_mapping(self):
+        self._mock_host.unmap_volume.side_effect = KeyError
+        self.driver.terminate_connection(test_volume, test_connector1)
 
     def test_update_migrated_volume_new_volume_not_found(self):
         self._system.volumes.safe_get.side_effect = [
@@ -697,10 +722,16 @@ class InfiniboxDriverTestCaseFC(InfiniboxDriverTestCaseBase):
 
     def test_validate_connector(self):
         fc_connector = {'wwpns': [TEST_WWN_1, TEST_WWN_2]}
-        iscsi_connector = {'initiator': TEST_INITIATOR_IQN}
+        iscsi_connector = {'initiator': TEST_INITIATOR_IQN1}
         self.driver.validate_connector(fc_connector)
         self.assertRaises(exception.InvalidConnectorException,
                           self.driver.validate_connector, iscsi_connector)
+
+    def test_terminate_connection_multiattached_volume(self):
+        test_volume.multiattach = True
+        test_volume.volume_attachment = [test_attachment1,
+                                         test_attachment1]
+        self.driver.terminate_connection(test_volume, test_connector1)
 
 
 class InfiniboxDriverTestCaseISCSI(InfiniboxDriverTestCaseBase):
@@ -717,7 +748,8 @@ class InfiniboxDriverTestCaseISCSI(InfiniboxDriverTestCaseBase):
                           self.driver.do_setup, None)
 
     def test_initialize_connection(self):
-        result = self.driver.initialize_connection(test_volume, test_connector)
+        result = self.driver.initialize_connection(test_volume,
+                                                   test_connector1)
         expected = {
             'driver_volume_type': TEST_ISCSI_PROTOCOL,
             'data': {
@@ -742,17 +774,18 @@ class InfiniboxDriverTestCaseISCSI(InfiniboxDriverTestCaseBase):
         self._system.network_spaces.safe_get.return_value = None
         self.assertRaises(exception.VolumeDriverException,
                           self.driver.initialize_connection,
-                          test_volume, test_connector)
+                          test_volume, test_connector1)
 
     def test_initialize_netspace_has_no_ips(self):
         self._mock_name_space1.get_ips.return_value = []
         self.assertRaises(exception.VolumeDriverException,
                           self.driver.initialize_connection,
-                          test_volume, test_connector)
+                          test_volume, test_connector1)
 
     def test_initialize_connection_with_chap(self):
         self.configuration.use_chap_auth = True
-        result = self.driver.initialize_connection(test_volume, test_connector)
+        result = self.driver.initialize_connection(test_volume,
+                                                   test_connector1)
         self.assertEqual(1, result['data']['target_lun'])
         self.assertEqual('CHAP', result['data']['auth_method'])
         self.assertIn('auth_username', result['data'])
@@ -763,7 +796,8 @@ class InfiniboxDriverTestCaseISCSI(InfiniboxDriverTestCaseBase):
             TEST_ISCSI_NAMESPACE1, TEST_ISCSI_NAMESPACE2]
         self._system.network_spaces.safe_get.side_effect = [
             self._mock_name_space1, self._mock_name_space2]
-        result = self.driver.initialize_connection(test_volume, test_connector)
+        result = self.driver.initialize_connection(test_volume,
+                                                   test_connector1)
         expected = {
             'driver_volume_type': TEST_ISCSI_PROTOCOL,
             'data': {
@@ -798,7 +832,8 @@ class InfiniboxDriverTestCaseISCSI(InfiniboxDriverTestCaseBase):
         self._mock_name_space2.get_ips.return_value = [
             mock.Mock(ip_address=TEST_IP_ADDRESS3, enabled=True),
             mock.Mock(ip_address=TEST_IP_ADDRESS4, enabled=True)]
-        result = self.driver.initialize_connection(test_volume, test_connector)
+        result = self.driver.initialize_connection(test_volume,
+                                                   test_connector1)
         expected = {
             'driver_volume_type': TEST_ISCSI_PROTOCOL,
             'data': {
@@ -832,7 +867,8 @@ class InfiniboxDriverTestCaseISCSI(InfiniboxDriverTestCaseBase):
         self._mock_name_space1.get_ips.return_value = [
             mock.Mock(ip_address=TEST_IP_ADDRESS1, enabled=False),
             mock.Mock(ip_address=TEST_IP_ADDRESS2, enabled=True)]
-        result = self.driver.initialize_connection(test_volume, test_connector)
+        result = self.driver.initialize_connection(test_volume,
+                                                   test_connector1)
         expected = {
             'driver_volume_type': TEST_ISCSI_PROTOCOL,
             'data': {
@@ -859,7 +895,8 @@ class InfiniboxDriverTestCaseISCSI(InfiniboxDriverTestCaseBase):
             mock.Mock(ip_address=TEST_IP_ADDRESS2, enabled=True)]
         self._mock_name_space1.get_properties.return_value = mock.Mock(
             iscsi_iqn=TEST_TARGET_IQN, iscsi_tcp_port=TEST_ISCSI_TCP_PORT1)
-        result = self.driver.initialize_connection(test_volume, test_connector)
+        result = self.driver.initialize_connection(test_volume,
+                                                   test_connector1)
         expected = {
             'driver_volume_type': TEST_ISCSI_PROTOCOL,
             'data': {
@@ -884,14 +921,19 @@ class InfiniboxDriverTestCaseISCSI(InfiniboxDriverTestCaseBase):
         self.assertEqual(expected, result)
 
     def test_terminate_connection(self):
-        self.driver.terminate_connection(test_volume, test_connector)
+        self.driver.terminate_connection(test_volume, test_connector1)
 
     def test_validate_connector(self):
         fc_connector = {'wwpns': [TEST_WWN_1, TEST_WWN_2]}
-        iscsi_connector = {'initiator': TEST_INITIATOR_IQN}
+        iscsi_connector = {'initiator': TEST_INITIATOR_IQN1}
         self.driver.validate_connector(iscsi_connector)
         self.assertRaises(exception.InvalidConnectorException,
                           self.driver.validate_connector, fc_connector)
+
+    def test_terminate_connection_multiattached_volume(self):
+        test_volume.multiattach = True
+        test_volume.volume_attachment = [test_attachment2, test_attachment2]
+        self.driver.terminate_connection(test_volume, test_connector2)
 
 
 class InfiniboxDriverTestCaseQoS(InfiniboxDriverTestCaseBase):
